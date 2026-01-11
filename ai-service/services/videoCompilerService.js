@@ -142,6 +142,9 @@ async function createVideoWithFFmpeg(imagePaths, audioPath, outputPath, options)
   const { imageDuration, resolution, transition } = options;
   const [width, height] = resolution.split('x').map(Number);
 
+  // Calculate total video duration
+  const totalDuration = imagePaths.length * imageDuration;
+
   return new Promise((resolve, reject) => {
     // Build FFmpeg command using individual inputs with loop
     const args = [];
@@ -157,7 +160,7 @@ async function createVideoWithFFmpeg(imagePaths, audioPath, outputPath, options)
     const audioInputIndex = imagePaths.length;
     if (audioPath) {
       args.push('-i', audioPath);
-      console.log(`🔊 Audio input added at index ${audioInputIndex}: ${audioPath}`);
+      console.log(`🔊 Audio input at index ${audioInputIndex}: ${audioPath}`);
     }
 
     // Build filter complex to concatenate all images
@@ -176,7 +179,8 @@ async function createVideoWithFFmpeg(imagePaths, audioPath, outputPath, options)
       args.push('-map', `${audioInputIndex}:a`);
       args.push('-c:a', 'aac');
       args.push('-b:a', '192k');
-      args.push('-shortest'); // End when shortest stream ends
+      // Trim audio to match video duration
+      args.push('-t', String(totalDuration));
     }
 
     // Video encoding settings
@@ -190,7 +194,7 @@ async function createVideoWithFFmpeg(imagePaths, audioPath, outputPath, options)
     );
 
     console.log('🎥 Running FFmpeg...');
-    console.log('📋 FFmpeg args:', args.join(' '));
+    console.log('📋 FFmpeg command: ffmpeg', args.join(' '));
     
     const ffmpeg = spawn('ffmpeg', args);
 
@@ -198,18 +202,28 @@ async function createVideoWithFFmpeg(imagePaths, audioPath, outputPath, options)
     
     ffmpeg.stderr.on('data', (data) => {
       stderr += data.toString();
+      // Log progress
+      const timeMatch = data.toString().match(/time=(\d{2}:\d{2}:\d{2})/);
+      if (timeMatch) {
+        process.stdout.write(`\r   Encoding: ${timeMatch[1]}`);
+      }
     });
 
     ffmpeg.on('close', (code) => {
+      console.log(''); // New line after progress
       if (code === 0) {
+        console.log('✅ FFmpeg completed successfully');
         resolve(outputPath);
       } else {
-        console.error('FFmpeg stderr:', stderr.slice(-1000));
+        console.error('❌ FFmpeg failed with code:', code);
+        console.error('📋 Last 1500 chars of stderr:');
+        console.error(stderr.slice(-1500));
         reject(new Error(`FFmpeg exited with code ${code}`));
       }
     });
 
     ffmpeg.on('error', (error) => {
+      console.error('❌ FFmpeg spawn error:', error.message);
       reject(new Error(`FFmpeg error: ${error.message}`));
     });
   });

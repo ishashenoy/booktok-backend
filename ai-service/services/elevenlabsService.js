@@ -148,17 +148,29 @@ export async function generateVibeAudio(vibeCollage, aesthetic = 'contemporary')
  * Actual API call to ElevenLabs
  */
 async function generateAudio(text, voiceId) {
+  console.log('🔊 ElevenLabs Request:');
+  console.log('   URL:', `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}`);
+  console.log('   Voice ID:', voiceId);
+  console.log('   Text length:', text.length, 'chars');
+  console.log('   Text preview:', text.substring(0, 100) + '...');
+  console.log('   Model:', 'eleven_multilingual_v2');
+  console.log('   API Key:', ELEVENLABS_API_KEY ? `${ELEVENLABS_API_KEY.substring(0, 10)}...` : 'NOT SET');
+
   try {
+    const requestBody = {
+      text,
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75,
+      }
+    };
+    
+    console.log('   Request body:', JSON.stringify(requestBody, null, 2));
+
     const response = await axios.post(
       `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}`,
-      {
-        text,
-        model_id: 'eleven_turbo_v2_5',
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75,
-        }
-      },
+      requestBody,
       {
         headers: {
           'xi-api-key': ELEVENLABS_API_KEY,
@@ -168,13 +180,10 @@ async function generateAudio(text, voiceId) {
       }
     );
 
-    // Convert audio buffer to base64 or upload to storage
-    // For now, return a placeholder URL
-    // In production, you'd upload to S3 or similar
+    console.log('✅ ElevenLabs Response:');
+    console.log('   Status:', response.status);
+    console.log('   Audio size:', response.data.byteLength, 'bytes');
 
-    console.log(`✅ Generated audio with voice ${voiceId}`);
-
-    // Return a mock URL (in production, upload to cloud storage and return real URL)
     const buffer = Buffer.from(response.data);
 
     return {
@@ -182,7 +191,22 @@ async function generateAudio(text, voiceId) {
       buffer
     };
   } catch (error) {
-    console.error('ElevenLabs API error:', error.response?.data || error.message);
+    console.error('❌ ElevenLabs API Error:');
+    console.error('   Status:', error.response?.status);
+    console.error('   Status Text:', error.response?.statusText);
+    
+    // Try to parse error response
+    if (error.response?.data) {
+      try {
+        const errorData = Buffer.isBuffer(error.response.data) 
+          ? JSON.parse(error.response.data.toString('utf-8'))
+          : error.response.data;
+        console.error('   Error Detail:', JSON.stringify(errorData, null, 2));
+      } catch (e) {
+        console.error('   Raw Error:', error.response.data.toString?.() || error.response.data);
+      }
+    }
+    console.error('   Message:', error.message);
     throw error;
   }
 }

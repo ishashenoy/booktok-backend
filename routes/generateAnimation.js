@@ -1,8 +1,37 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
+const path = require('path');
 
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:5001';
+// AI Services - loaded dynamically since they use ES modules
+let aiServices = null;
+
+async function getAIServices() {
+    if (aiServices) return aiServices;
+    
+    try {
+        const bookVideoPipeline = await import('../ai-service/services/bookVideoPipeline.js');
+        const videoGenerationService = await import('../ai-service/services/videoGenerationService.js');
+        const geminiService = await import('../ai-service/services/geminiService.js');
+        const bookAnalysis = await import('../ai-service/services/bookAnalysis.js');
+        
+        aiServices = {
+            generateVideoFromSummary: bookVideoPipeline.generateVideoFromSummary,
+            generateQuickVideo: bookVideoPipeline.generateQuickVideo,
+            generatePremiumVideo: bookVideoPipeline.generatePremiumVideo,
+            checkPipelineHealth: bookVideoPipeline.checkPipelineHealth,
+            cleanupVideo: bookVideoPipeline.cleanupVideo,
+            generateCharacterDrivenVideo: videoGenerationService.generateCharacterDrivenVideo,
+            generateCompletePreview: videoGenerationService.generateCompletePreview,
+            getAestheticRecommendations: geminiService.getAestheticRecommendations,
+            generateSummary: geminiService.generateSummary,
+            analyzeBook: bookAnalysis.analyzeBook,
+        };
+        return aiServices;
+    } catch (error) {
+        console.error('Failed to load AI services:', error.message);
+        throw new Error('AI services not available');
+    }
+}
 
 /**
  * POST /api/generate/video
@@ -20,7 +49,8 @@ const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:5001';
  */
 router.post('/video', async (req, res) => {
     try {
-        const { summary, title, aesthetic, voiceType, quality } = req.body;
+        const services = await getAIServices();
+        const { summary, title, aesthetic, voiceType, numImages, quality = 'standard' } = req.body;
 
         if (!summary) {
             return res.status(400).json({ 
@@ -29,37 +59,67 @@ router.post('/video', async (req, res) => {
             });
         }
 
-        console.log(`🎬 Video generation request for: ${title || 'Untitled'}`);
+        console.log(`\n${'='.repeat(50)}`);
+        console.log(`📚 New video generation request`);
+        console.log(`📖 Title: ${title || 'Untitled'}`);
+        console.log(`📝 Summary length: ${summary.length} characters`);
+        console.log(`🎨 Aesthetic: ${aesthetic || 'auto'}`);
+        console.log(`🔊 Voice: ${voiceType || 'female'}`);
+        console.log(`⚡ Quality: ${quality}`);
+        console.log(`${'='.repeat(50)}\n`);
 
-        const response = await axios.post(
-            `${AI_SERVICE_URL}/generate-video`,
-            { summary, title, aesthetic, voiceType, quality },
-            { 
-                timeout: 300000, // 5 minute timeout for video generation
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                }
-            }
-        );
+        // Select generation function based on quality
+        let generateFunc;
+        switch (quality) {
+            case 'quick':
+                generateFunc = services.generateQuickVideo;
+                break;
+            case 'premium':
+                generateFunc = services.generatePremiumVideo;
+                break;
+            default:
+                generateFunc = services.generateVideoFromSummary;
+        }
 
-        res.json(response.data);
-    } catch (err) {
-        console.error('Video generation error:', err.message);
-        
-        if (err.response) {
-            res.status(err.response.status).json(err.response.data);
-        } else if (err.code === 'ECONNREFUSED') {
-            res.status(503).json({ 
-                error: 'AI service unavailable',
-                message: 'The AI service is not running. Please start the ai-service.',
-            });
-        } else {
-            res.status(500).json({ 
-                error: 'Video generation failed', 
-                details: err.message 
+        const result = await generateFunc({
+            summary,
+            title: title || 'Book Preview',
+            aesthetic: aesthetic || 'cinematic',
+            voiceType: voiceType || 'female',
+            numImages: numImages || 4,
+        });
+
+        if (!result.success) {
+            return res.status(500).json({
+                error: 'Video generation failed',
+                message: result.error,
             });
         }
+
+        // Check if client wants video binary or JSON
+        const acceptHeader = req.headers.accept || '';
+        
+        if (acceptHeader.includes('video/') || acceptHeader.includes('application/octet-stream')) {
+            res.setHeader('Content-Type', 'video/mp4');
+            res.setHeader('Content-Disposition', `attachment; filename="${title || 'video'}.mp4"`);
+            res.send(result.videoBuffer);
+            setTimeout(() => services.cleanupVideo(result.videoPath), 60000);
+        } else {
+            const videoUrl = `/videos/${path.basename(result.videoPath)}`;
+            res.json({
+                success: true,
+                videoUrl,
+                duration: result.duration,
+                metadata: result.metadata,
+                message: 'Video generated successfully',
+            });
+        }
+    } catch (err) {
+        console.error('Video generation error:', err.message);
+        res.status(500).json({ 
+            error: 'Video generation failed', 
+            details: err.message 
+        });
     }
 });
 
@@ -68,51 +128,62 @@ router.post('/video', async (req, res) => {
  * 
  * Stream/download a generated video file
  */
-router.get('/video/:filename', async (req, res) => {
-    try {
-        const { filename } = req.params;
-        
-        const response = await axios.get(
-            `${AI_SERVICE_URL}/videos/${filename}`,
-            { responseType: 'stream' }
-        );
-
-        res.setHeader('Content-Type', 'video/mp4');
-        response.data.pipe(res);
-    } catch (err) {
-        console.error('Video fetch error:', err.message);
-        res.status(404).json({ error: 'Video not found' });
-    }
+router.get('/video/:filename', (req, res) => {
+    const { filename } = req.params;
+    const videoPath = path.join(__dirname, '..', 'ai-service', 'output', filename);
+    
+    res.sendFile(videoPath, (err) => {
+        if (err) {
+            console.error('Video fetch error:', err.message);
+            res.status(404).json({ error: 'Video not found' });
+        }
+    });
 });
 
-// Proxy to AI service for analysis
+// Analyze book for aesthetic recommendations
 router.post('/analyze', async (req, res) => {
     try {
-        const response = await axios.post(`${AI_SERVICE_URL}/analyze`, req.body);
-        res.json(response.data);
+        const services = await getAIServices();
+        const bookData = req.body;
+        
+        if (!bookData.title && !bookData.description) {
+            return res.status(400).json({ error: 'Title or description required' });
+        }
+
+        const analysis = await services.analyzeBook(bookData);
+        res.json(analysis);
     } catch (err) {
         console.error('AI analyze error:', err.message);
         res.status(500).json({ error: 'AI service error', details: err.message });
     }
 });
 
+// Generate animation specifications
 router.post('/animation-spec', async (req, res) => {
     try {
-        const response = await axios.post(`${AI_SERVICE_URL}/generate-animation-spec`, req.body);
-        res.json(response.data);
+        const services = await getAIServices();
+        const bookData = req.body;
+        
+        const [videoPrompt, preview] = await Promise.all([
+            services.generateCharacterDrivenVideo(bookData),
+            services.generateCompletePreview(bookData),
+        ]);
+
+        res.json({ videoPrompt, preview });
     } catch (err) {
         console.error('AI animation-spec error:', err.message);
         res.status(500).json({ error: 'AI service error', details: err.message });
     }
 });
 
-// Health check for AI service
+// Health check for AI services
 router.get('/health', async (req, res) => {
     try {
-        const response = await axios.get(`${AI_SERVICE_URL}/health`);
-        res.json({ aiService: response.data });
+        const services = await getAIServices();
+        const health = await services.checkPipelineHealth();
+        res.json({ aiService: health });
     } catch (err) {
-        res.status(503).json({ error: 'AI service unavailable' });
+        res.status(503).json({ error: 'AI service unavailable', details: err.message });
     }
 });
 

@@ -6,12 +6,13 @@
  * This service orchestrates the entire video generation process:
  * 1. Takes a book summary/prompt from frontend
  * 2. Generates scene images using AI
- * 3. Generates voiceover narration using ElevenLabs
+ * 3. Generates voiceover narration using ElevenLabs (with Google TTS fallback)
  * 4. Compiles everything into a final video using FFmpeg
  */
 
 import { generateImagesFromSummary, isConfigured as isImageConfigured } from './imageGenerationService.js';
 import { generateSummaryAudio, isConfigured as isVoiceConfigured } from './elevenlabsService.js';
+import { generateSpeech as generateGoogleTTS } from './edgeTtsService.js';
 import { compileVideo, compileVideoWithEffects, getVideoBuffer, deleteVideo, checkFFmpeg } from './videoCompilerService.js';
 import { generateText } from './llmClient.js';
 import axios from 'axios';
@@ -83,9 +84,13 @@ export async function generateVideoFromSummary(params) {
     console.log('\n🔊 Step 3: Generating voiceover...');
     const audioResult = await generateVoiceover(narrationScript, voiceType);
     console.log(`✅ Voiceover generated (${audioResult.duration}s)`);
+    console.log(`   Audio buffer: ${audioResult.audioBuffer ? `${audioResult.audioBuffer.length} bytes` : 'NULL'}`);
 
     // Step 4: Compile video
     console.log('\n🎥 Step 4: Compiling video...');
+    if (!audioResult.audioBuffer) {
+      console.warn('⚠️ WARNING: No audio buffer available!');
+    }
     const compileFunc = useEffects ? compileVideoWithEffects : compileVideo;
     const videoResult = await compileFunc(imageUrls, audioResult.audioBuffer, {
       audioDuration: audioResult.duration,
@@ -152,45 +157,59 @@ Respond ONLY with the narration text, nothing else.`;
 }
 
 /**
-/**
- * Generate voiceover audio using ElevenLabs
+ * Generate voiceover audio using ElevenLabs (with Google TTS fallback)
  */
 async function generateVoiceover(text, voiceType = 'female') {
-  if (!ELEVENLABS_API_KEY) {
-    throw new Error('ElevenLabs API key not configured. Set ELEVENLABS_API_KEY in .env file.');
+  // Try ElevenLabs first if configured
+  if (ELEVENLABS_API_KEY) {
+    const voiceId = NARRATOR_VOICES[voiceType] || NARRATOR_VOICES.female;
+
+    try {
+      console.log('🎤 Trying ElevenLabs TTS...');
+      const response = await axios.post(
+        `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}`,
+        {
+          text,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+          },
+        },
+        {
+          headers: {
+            'xi-api-key': ELEVENLABS_API_KEY,
+            'Content-Type': 'application/json',
+          },
+          responseType: 'arraybuffer',
+          timeout: 60000,
+        }
+      );
+
+      const audioBuffer = Buffer.from(response.data);
+      const duration = calculateSpeakingDuration(text);
+      console.log('✅ ElevenLabs TTS successful');
+
+      return {
+        audioBuffer,
+        duration,
+      };
+    } catch (error) {
+      console.warn('⚠️ ElevenLabs failed:', error.response?.status || error.message);
+      console.log('🔄 Falling back to Google TTS...');
+    }
   }
 
-  const voiceId = NARRATOR_VOICES[voiceType] || NARRATOR_VOICES.female;
-
-  console.log('🎤 Generating voiceover with ElevenLabs...');
-  const response = await axios.post(
-    `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}`,
-    {
-      text,
-      model_id: 'eleven_turbo_v2_5',
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.75,
-      },
-    },
-    {
-      headers: {
-        'xi-api-key': ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json',
-      },
-      responseType: 'arraybuffer',
-      timeout: 60000,
-    }
-  );
-
-  const audioBuffer = Buffer.from(response.data);
-  const duration = calculateSpeakingDuration(text);
-  console.log('✅ ElevenLabs TTS successful');
-
-  return {
-    audioBuffer,
-    duration,
-  };
+  // Fallback to Google TTS (free, no API key needed)
+  try {
+    console.log('🎤 Using Google TTS (free)...');
+    const result = await generateGoogleTTS(text, voiceType);
+    console.log('✅ Google TTS successful');
+    return result;
+  } catch (error) {
+    console.error('❌ Google TTS error:', error.message);
+    throw new Error('All TTS services failed: ' + error.message);
+  }
 }
 
 /**

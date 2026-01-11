@@ -285,6 +285,7 @@ function getStyleGuide(aesthetic) {
     'cozy-fantasy': 'warm golden lighting, fantasy village, magical creatures, enchanted forest, soft warm colors, inviting atmosphere, whimsical details',
     'contemporary': 'modern realistic setting, natural lighting, urban or suburban backdrop, relatable spaces, authentic mood, clean composition',
     'mystery-thriller': 'dramatic shadows, noir lighting, suspenseful atmosphere, urban night scenes, rain-slicked streets, mysterious mood, tension',
+    'romantasy': 'romantic fantasy aesthetic, soft magical lighting, epic romance, lush landscapes, enchanted atmosphere, dreamy colors, emotional depth, sweeping vistas',
     'cinematic': 'cinematic composition, dramatic lighting, film grain, movie-like quality, professional cinematography, epic scale',
   };
   
