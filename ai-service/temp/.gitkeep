@@ -1,0 +1,3 @@
+# Temp Directory
+This directory is used for temporary files during video generation.
+Files are automatically cleaned up after processing.

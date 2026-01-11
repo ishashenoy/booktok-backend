@@ -153,16 +153,16 @@ async function generateAudio(text, voiceId) {
       `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}`,
       {
         text,
-        model_id: 'eleven_monolingual_v1',
+        model_id: 'eleven_turbo_v2_5',
         voice_settings: {
           stability: 0.5,
           similarity_boost: 0.75,
-        },
+        }
       },
       {
         headers: {
           'xi-api-key': ELEVENLABS_API_KEY,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
         responseType: 'arraybuffer',
       }
@@ -175,7 +175,12 @@ async function generateAudio(text, voiceId) {
     console.log(`✅ Generated audio with voice ${voiceId}`);
 
     // Return a mock URL (in production, upload to cloud storage and return real URL)
-    return `https://elevenlabs-audio.example.com/${voiceId}-${Date.now()}.mp3`;
+    const buffer = Buffer.from(response.data);
+
+    return {
+      base64: `data:audio/mpeg;base64,${buffer.toString('base64')}`,
+      buffer
+    };
   } catch (error) {
     console.error('ElevenLabs API error:', error.response?.data || error.message);
     throw error;
